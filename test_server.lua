@@ -8,17 +8,17 @@ sypri.setServer(true);
 
 xRoutine = sypri.addRoutine({
   
-  keys = {"x"},
-  maxRate = 2,
+  keys = {"x", "noupdate"},
+  globalPriority = 60,
   protocol = sypri.RoutineProtocol.RELIABLE,
-  mode = sypri.RoutineMode.EXACT
+  mode = sypri.RoutineMode.DIFF
 
 });
 
 yRoutine = sypri.addRoutine({
   
   keys = {"y"},
-  maxRate = 1.0;
+  globalPriority = 30,
   protocol = sypri.RoutineProtocol.UNRELIABLE,
   mode = sypri.RoutineMode.EXACT;
 
@@ -26,10 +26,18 @@ yRoutine = sypri.addRoutine({
 
 local dataTable = {
   x = 1,
-  y = 1
+  y = 1,
+  noupdate = "get me once"
 }
 
 sypri.addTable("data", dataTable, { xRoutine, yRoutine });
+
+cs.server.connect = function(clientID)
+  
+  sypri.addClient(clientID);
+  
+end
+
 
 function cs.server.update(dt)
   
