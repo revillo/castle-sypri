@@ -7,7 +7,7 @@ local cs = sypri.cs;
 sypri.setServer(false);
 
 
-sypri.setGlobalCallback("onReceiveData", function(tableID, data) 
+function sypri.onReceiveData(tableID, data) 
   
   print(tableID)
   

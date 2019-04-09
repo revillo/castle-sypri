@@ -189,9 +189,14 @@ do
                             end
                         end
                         
-                        if request.sypri then
-                          client.receiveSypri(request.sypri)
+                        if request.syp_td then
+                          server.receiveSypriTable(request.syp_td, id)
                         end
+                        
+                        if request.syp_e then
+                          server.receiveSypriEvent(request.syp_e, id);
+                        end
+                        
                     end
                 end
             end
@@ -390,8 +395,12 @@ do
                         end
                     end
                     
-                    if request.sypri then
-                      client.receiveSypri(request.sypri)
+                    if request.syp_td then
+                      client.receiveSypriTable(request.syp_td)
+                    end
+                    
+                    if request.syp_e then
+                      client.receiveSypriEvent(request.syp_e);
                     end
                 end
             end

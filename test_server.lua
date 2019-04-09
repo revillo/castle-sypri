@@ -5,6 +5,11 @@ local cs = sypri.cs;
 
 sypri.setServer(true);
 
+local dataTable = {
+  x = 1,
+  y = 1,
+  noupdate = "get me once"
+}
 
 xRoutine = sypri.addRoutine({
   
@@ -23,12 +28,6 @@ yRoutine = sypri.addRoutine({
   mode = sypri.RoutineMode.EXACT;
 
 });
-
-local dataTable = {
-  x = 1,
-  y = 1,
-  noupdate = "get me once"
-}
 
 sypri.addTable("data", dataTable, { xRoutine, yRoutine });
 

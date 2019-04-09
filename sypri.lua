@@ -103,9 +103,20 @@ function Utils.merge(tabl, prevTable)
 
 end
 
+
+function Utils.splitString(str, sep)
+   local sep, fields = sep or ":", {}
+   local pattern = string.format("([^%s]+)", sep)
+   str:gsub(pattern, function(c) fields[#fields+1] = c end)
+   return fields
+end
+
 local sypri = {
-  isServer = false
+  isServer = false,
+  utils = Utils
 };
+
+-- Local Fields
 
 local sRoutines = {};
 local sTables = {};
@@ -116,10 +127,13 @@ local sBroadCastRoutines = {}; -- Routines that broadcast to all clients
 local sTableSaves = {};
 local sClock = 0;
 local sTableCallbacks = {};
-local sGlobalCallbacks = {};
+--local sGlobalCallbacks = {};
 local sTimeStep = 0;
 local sDirtyKeyTimes = {};
 local sUpdateRate = 30;
+local sCSHost = nil;
+
+-- Enums
 
 sypri.EnetChannel = {
   RELIABLE = 0,
@@ -142,7 +156,28 @@ sypri.RoutineServerMode = {
   INDIVIDUAL = 2
 }
 
-function sypri.receiveTableData(tableID, data)
+sypri.RoutineDiffMode = {
+  AUTO = 1,
+  MANUAL = 2
+}
+
+
+-- Global callbacks
+function sypri.onAddTable(tableID, data, clientID)
+
+end
+
+function sypri.onReceiveData(tableID, data, clientID)
+
+end
+
+function sypri.receiveEvent(event, clientID)
+
+end
+
+-- Sypri Implementation
+
+function sypri.receiveTableData(tableID, data, clientID)
   
   local callbacks = sTableCallbacks[tableID];
 
@@ -155,8 +190,8 @@ function sypri.receiveTableData(tableID, data)
       callbacks.onTableAdded(tableID, sTables[tableID]);
     end
     
-    if (sGlobalCallbacks.onTableAdded) then
-      sGlobalCallbacks.onTableAdded(tableID, sTables[tableID]);
+    if (sypri.onAddTable) then
+      sypri.onAddTable(tableID, sTables[tableID]);
     end
 	
   end
@@ -167,15 +202,13 @@ function sypri.receiveTableData(tableID, data)
   local addOrReject = true;
   
   if (callbacks and callbacks.onReceiveData) then
-    addOrReject = callbacks.onReceiveData(data)
+    addOrReject = callbacks.onReceiveData(tableID, data, clientID)
     if (addOrReject == nil) then
       addOrReject = true;
     end
   end
   
-  if (sGlobalCallbacks.onReceiveData) then
-    sGlobalCallbacks.onReceiveData(tableID, data);
-  end
+  sypri.onReceiveData(tableID, data, clientID);
   
   if (addOrReject) then
     List.pushright(history, Utils.merge(data, history[history.last]));
@@ -183,8 +216,9 @@ function sypri.receiveTableData(tableID, data)
     if (List.length(history) > 60) then
       List.popleft(history);
     end
+    
+      Utils.copyInto(sTables[tableID], data);
   end
-
 
 end
 
@@ -201,26 +235,29 @@ function sypri.getTableHistory(tableID)
   return sTableHistory[tableID];
 end
 
+function sypri.getTable(tableID)
+  return sTables[tableID];
+end
+
 function sypri.setServer(toggle)
   
   sypri.isServer = toggle;
+  
+  if (sypri.isServer) then
+    sCSHost = cs.server
+  else
+    sCSHost = cs.client
+  end
+  
+  sCSHost.numChannels = 3;  
+    
+  sCSHost.receiveSypriTable = function(msg, clientID)
+    sypri.receiveTableData(msg.id, msg.d, clientID);
+  end
  
-   cs.server.numChannels = 3;
-   cs.client.numChannels = 3;
-   
-   if (sypri.isServer) then
-    
-    cs.server.receiveSypri = function(msg)
-      sypri.receiveTableData(msg.id, msg.d);
-    end
-   
-   else
-    
-    cs.client.receiveSypri = function(msg)
-      sypri.receiveTableData(msg.id, msg.d);
-    end
-   
-   end
+  sCSHost.receiveSypriEvent = function(msg, clientID)
+    sypri.receiveEvent(msg, clientID);
+  end
    
 end
 
@@ -250,6 +287,7 @@ function sypri.addRoutine(parameters)
   routine.mode = routine.mode or sypri.RoutineMode.EXACT;
   routine.lastSync = -10.0;
   routine.id = sRoutineID;
+  routine.diffMode = routine.diffMode or sypri.RoutineDiffMode.AUTO;
   sRoutineID = sRoutineID + 1;
   sRoutines[routine.id] = routine;
   
@@ -293,9 +331,15 @@ function sypri.setClientPriority(routine, clientID, tableID, priority)
   --routine.globalPriority = nil; -- Disable global priority if setClientPriority is used??
 end 
 
+function encodeEvent(event)
+  return marshal.encode({
+    syp_e = event
+  });
+end
+
 function encodeTableData(tableID, data)
   return marshal.encode({
-    sypri = {
+    syp_td = {
       id = tableID,
       d = data
     }
@@ -308,7 +352,7 @@ function sypri.eachTableInRoutine(routine, fn, ...)
   end 
 end
 
-function sendClientExact(routine, tableID, tabl, clientID)
+function sendExactToClient(routine, tableID, tabl, clientID)
   exactData = Utils.cloneKeys(tabl, routine.keys);
   local encodedMsg = encodeTableData(tableID, exactData);
   cs.server.sendEncoded(clientID, encodedMsg, sypri.EnetChannel.RELIABLE, "reliable");
@@ -316,7 +360,7 @@ end
 
 function sypri.addClient(clientID) 
   for routineID, routine in pairs(sBroadCastRoutines) do
-    sypri.eachTableInRoutine(routine, sendClientExact, clientID);
+    sypri.eachTableInRoutine(routine, sendExactToClient, clientID);
   end
 end
 
@@ -429,6 +473,27 @@ function sypri.sendTableData(routine, tableID, tabl)
   
 end
 
+function sypri.sendEvent(event, clients)
+  
+  local encoded = encodeEvent(event);
+  
+  if (sypri.isServer) then
+    
+    if (clients) then
+      
+      for i, clientID in pairs(clients) do
+        cs.server.sendEncoded(clientID, encoded, sypri.EnetChannel.RELIABLE, "reliable"); 
+      end
+           
+    else
+      cs.server.sendEncoded('all', encoded, sypri.EnetChannel.RELIABLE, "reliable"); 
+    end
+  
+  else
+    cs.client.sendEncoded(encoded, sypri.EnetChannel.RELIABLE, "reliable");
+  end
+end
+
 function sypri.update(dt)
   
   sClock = sClock + dt;
@@ -448,7 +513,6 @@ function sypri.update(dt)
       end -- each table
     end -- should sync
   end -- each routine
-  
 end
 
 
