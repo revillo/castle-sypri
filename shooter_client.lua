@@ -6,6 +6,8 @@ local client = cs.client;
 
 sypri.setServer(false);
 
+sypri.setUploadCap(20000);
+
 local playerInited = false;
 
 local playerClientID = nil;
@@ -152,6 +154,8 @@ end
 
 
 function client.load()
+
+  
 
 
 end

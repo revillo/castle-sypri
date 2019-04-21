@@ -7,12 +7,10 @@ local server = cs.server;
 sypri.setServer(true);
 
 local playerPositionRoutine = sypri.addRoutine({
-
   keys = {"x", "y", "dx", "dy"},
   protocol = sypri.RoutineProtocol.UNRELIABLE,
   mode = sypri.RoutineMode.EXACT,
   globalPriority = 1
-
 });
 
 

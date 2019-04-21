@@ -133,6 +133,14 @@ local sDirtyKeyTimes = {};
 local sUpdateRate = 30;
 local sCSHost = nil;
 
+local sBandwidthCap = 1000;
+local sCurrentBandwidth = 0;
+local sCapBandwidth = false;
+
+local sPriorityAccums = {};
+local sAccumSorter = {};
+
+
 -- Enums
 
 sypri.EnetChannel = {
@@ -176,6 +184,13 @@ function sypri.receiveEvent(event, clientID)
 end
 
 -- Sypri Implementation
+
+function sypri.setUploadCap(cap)
+  
+  sBandwidthCap = cap;
+  sCapBandwidth = true;
+
+end
 
 function sypri.receiveTableData(tableID, data, clientID)
   
@@ -261,6 +276,12 @@ function sypri.setServer(toggle)
    
 end
 
+function sypri.addRoutines(tableID, routines)
+  for i, routine in pairs(routines) do
+    routine.tables[id] = tabl;
+  end
+end
+
 function sypri.addTable(id, tabl, routines)
   sTables[id] = tabl;
   sTableHistory[id] = List.new();
@@ -269,6 +290,7 @@ function sypri.addTable(id, tabl, routines)
   
   for i, routine in pairs(routines) do
     routine.tables[id] = tabl;
+    routine.priorityAccum[id] = 0;
   end
   
 end
@@ -290,6 +312,7 @@ function sypri.addRoutine(parameters)
   routine.diffMode = routine.diffMode or sypri.RoutineDiffMode.AUTO;
   sRoutineID = sRoutineID + 1;
   sRoutines[routine.id] = routine;
+  routine.priorityAccum = {};
   
   
   if (sypri.isServer) then
@@ -369,6 +392,113 @@ function sypri.removeRoutine(routine)
   sRoutines[routine.id] = nil;
 end
 
+function sypri.removeRoutineFromTable(routine, tableID)
+  routine.tables[tableID] = nil;
+  routine.priorityAccum[tableID] = nil;
+end
+
+function sendTableDataServer(routine, exactData, diffData, tableID, tabl, channel, flag)
+
+
+  if (routine.serverMode == sypri.RoutineServerMode.BROADCAST) then
+    
+       ----------- Server to all -----------
+      if (not exactData and not diffData) then
+        return
+      end
+    
+      local encodedMsg = encodeTableData(tableID, exactData or diffData);
+      
+      cs.server.sendEncoded('all', encodedMsg, channel, flag);
+      
+  elseif (routine.serverMode == sypri.RoutineServerMode.INDIVIDUAL) then
+  
+    ----------- Server to certain clients -----------
+    for clientID, priority in pairs(routine.tableClientPriority) do
+      
+      local lastSync = routine.tableClientLastSync[tableID][clientID] or -1;
+      
+      -- Use client priority
+      if (sClock - lastSync >= priority/sUpdateRate) then
+        
+        -- Exact --
+        if (lastSync < 0 or routine.mode == sypri.RoutineMode.EXACT) then
+          
+          encodedMsg = encodeTableData(tableID, exactData);
+          
+          cs.server.sendEncoded(clientID, encodedMsg, channel, flag);        
+
+        elseif (routine.mode == sypri.RoutineMode.DIFF) then
+        -- Diff -- 
+          local sendData = {};
+          local shouldSend = false;
+          
+          for key, keyDirtyTime in sDirtyKeyTimes[tableID] do
+            if (keyDirtyTime > lastSync) then
+              shouldSend = true;
+              sendKeys[key] = tabl[key];
+            end
+          end
+
+          -- todo, reuse encoded msg for certain clients
+          if (shouldSend) then
+            local encodedMsg = encodeTableData(tableID, sendKeys);
+            
+            cs.server.sendEncoded(clientID, encodedMsg, channel, flag);   
+          end
+        end
+        
+        routine.tableClientLastSync[tableID][clientID] = sClock;
+      end -- client priority
+
+    end -- each client
+  end 
+
+end
+
+function sendTableDataClient(routine, exactData, diffData, tableID, channel, flag)
+    
+    ----------- Client to Server ----------- 
+    
+    if (not exactData and not diffData) then
+      return
+    end
+    
+    if (sCapBandwidth and sCurrentBandwidth > sBandwidthCap) then return end;
+    
+    local encodedMsg = encodeTableData(tableID, exactData or diffData);
+    
+    if (sCapBandwidth) then
+      local msgSize = #encodedMsg;
+      
+      sCurrentBandwidth = sCurrentBandwidth + msgSize;
+      
+      if (sCurrentBandwidth + msgSize > sBandwidthCap) then
+        return;
+      else -- bandwidth not exceeded, reset accum
+      
+        sCurrentBandwidth = sCurrentBandwidth + msgSize;
+        
+        local hash = routine.id.."+"..tableID;
+        local fields = sPriorityAccums[hash];
+        if (fields) then
+          sPriorityAccums[hash].accum = 0;
+        end
+      end
+    end
+    
+    cs.client.sendEncoded(encodedMsg, channel, flag);
+
+end
+
+--[[
+function handleBandwidthExceeded(routine, tableID)
+
+  
+
+end
+]]
+
 function sypri.sendTableData(routine, tableID, tabl)
   
   local flag = "reliable";
@@ -404,70 +534,12 @@ function sypri.sendTableData(routine, tableID, tabl)
   end
   
   if (sypri.isServer) then
-    if (routine.serverMode == sypri.RoutineServerMode.BROADCAST) then
     
-       ----------- Server to all -----------
-      if (not exactData and not diffData) then
-        return
-      end
+    sendTableDataServer(routine, exactData, diffData, tableID, tabl, channel, flag);
     
-      encodedMsg = encodeTableData(tableID, exactData or diffData);
-      
-      cs.server.sendEncoded('all', encodedMsg, channel, flag);
-      
-    elseif (routine.serverMode == sypri.RoutineServerMode.INDIVIDUAL) then
-    
-      ----------- Server to certain clients -----------
-      for clientID, priority in pairs(routine.tableClientPriority) do
-        
-        local lastSync = routine.tableClientLastSync[tableID][clientID] or -1;
-        
-        -- Use client priority
-        if (sClock - lastSync >= priority/sUpdateRate) then
-          
-          -- Exact --
-          if (lastSync < 0 or routine.mode == sypri.RoutineMode.EXACT) then
-            
-            encodedMsg = encodeTableData(tableID, exactData);
-            
-            cs.server.sendEncoded(clientID, encodedMsg, channel, flag);        
-
-          elseif (routine.mode == sypri.RoutineMode.DIFF) then
-          -- Diff -- 
-            local sendData = {};
-            local shouldSend = false;
-            
-            for key, keyDirtyTime in sDirtyKeyTimes[tableID] do
-              if (keyDirtyTime > lastSync) then
-                shouldSend = true;
-                sendKeys[key] = tabl[key];
-              end
-            end
-
-            -- todo, reuse encoded msg for certain clients
-            if (shouldSend) then
-              encodedMsg = encodeTableData(tableID, sendKeys);
-              
-              cs.server.sendEncoded(clientID, encodedMsg, channel, flag);   
-            end
-          end
-          
-          routine.tableClientLastSync[tableID][clientID] = sClock;
-        end -- client priority
-
-      end -- each client
-    end 
   else -- is server
   
-    ----------- Client to Server ----------- 
-  
-    if (not exactData and not diffData) then
-      return
-    end
-    
-    encodedMsg = encodeTableData(tableID, exactData or diffData);
-  
-    cs.client.sendEncoded(encodedMsg, channel, flag);
+    sendTableDataClient(routine, exactData, diffData, tableID, channel, flag);
     
   end  
   
@@ -494,28 +566,109 @@ function sypri.sendEvent(event, clients)
   end
 end
 
-function sypri.update(dt)
-  
-  sClock = sClock + dt;
-  sTimeStep = sTimeStep + 1;
+function accumCompare(a, b) 
+
+  return sPriorityAccums[a].accum > sPriorityAccums[b].accum;
+
+end
+
+function accumulatePriorities()
+
+  sAccumSorter = {};
+
+  local sorterIndex = 1;
   
   for rID, routine in pairs(sUpdateRoutines) do
     
-    local delta = sClock - routine.lastSync;
-    
-    if (delta >= routine.globalPriority / sUpdateRate)  then
+    for tableID, tabl in pairs(routine.tables) do
       
-      routine.lastSync = sClock;
-    
-      for tableID, tabl in pairs(routine.tables) do
+      --routine.priorityAccum[tableID] = (routine.priorityAccum[tableID] or 0) + (30.0 / routine.globalPriority);
       
-        sypri.sendTableData(routine, tableID, tabl);
-      end -- each table
-    end -- should sync
-  end -- each routine
+      local hash = rID.."+"..tableID;
+      
+      sPriorityAccums[hash] = sPriorityAccums[hash] or {
+        routineID = rID,
+        tableID = tableID,
+        accum = 0
+      }
+      
+      local addition = 0;
+      
+      if (routine.globalPriority > 0) then
+        addition = (sUpdateRate/routine.globalPriority);
+      end
+      
+      local accum = sPriorityAccums[hash].accum + addition;
+      
+      sPriorityAccums[hash].accum = accum;
+      
+      if (accum >= sUpdateRate) then
+        sAccumSorter[sorterIndex] = hash;
+        sorterIndex = sorterIndex + 1;
+      end
+      
+    end
+    
+  end
+  
+  table.sort(sAccumSorter, accumCompare);
+  
 end
 
+local sLastTick = -10;
 
+function sypri.update(dt)
+  
+  sClock = sClock + dt;
+  
+  if (sClock - sLastTick < 1.0/sUpdateRate) then
+    return;
+  else
+    sTimeStep = sTimeStep + 1;
+    sLastTick = sClock;
+    
+    if (sTimeStep % sUpdateRate == 0) then
+      print(sCurrentBandwidth);
+      sCurrentBandwidth = 0;
+    end
+  end
+  
+  if (sCapBandwidth) then
+  
+    sAccumSorter = {};
+    
+    accumulatePriorities();
+  
+    for i, hash in ipairs(sAccumSorter) do
+      local fields = sPriorityAccums[hash];
+      local routine = sRoutines[fields.routineID];
+      local tableID = fields.tableID;
+      
+      
+      sypri.sendTableData(routine, tableID, routine.tables[tableID]);
+    end
+  
+  else
+  
+    for rID, routine in pairs(sUpdateRoutines) do
+      
+      local delta = sClock - routine.lastSync;
+      
+      if (delta >= routine.globalPriority / sUpdateRate)  then
+        
+        routine.lastSync = sClock;
+      
+        for tableID, tabl in pairs(routine.tables) do
+        
+          sypri.sendTableData(routine, tableID, tabl);
+
+        end -- each table
+      end -- should sync
+    end -- each routine
+  end
+
+  end
+  
 sypri.cs = cs;
 
 return sypri;
